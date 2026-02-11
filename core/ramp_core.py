@@ -13,10 +13,8 @@ from pathlib import Path
 
 from ramp.core.core import UseCase  # RAMP
 
-from core.utils import matrix_to_long_series
 from config.path_manager import PM
 from core.utils import (
-    build_full_input_for_archetype,
     save_archetype_configs,
     load_year_structure,
     load_archetype_configs,
@@ -63,8 +61,17 @@ def build_multi_archetypes_from_uploads(rows: Dict[str, dict]) -> Dict[str, dict
             }
             continue
 
-        _ = build_full_input_for_archetype(buf, arch_id)
-        full_path = (PM.archetypes_dir / f"ramp_input_{arch_id}.xlsx").resolve()
+        # Save the uploaded FULL template Excel as-is
+        PM.archetypes_dir.mkdir(parents=True, exist_ok=True)
+        out_path = (PM.archetypes_dir / f"ramp_input_{arch_id}.xlsx").resolve()
+
+        if hasattr(buf, "getvalue"):
+            out_path.write_bytes(buf.getvalue())
+        else:
+            # fallback: if it's a stream, read it
+            out_path.write_bytes(buf.read())
+
+        full_path = out_path
 
         built_configs[arch_id] = {
             "season": meta.get("season"),
@@ -97,46 +104,16 @@ def _safe_name(s: Optional[str]) -> str:
         .replace("\\", "_")
     )
 
-def _fit_to_year(mat: np.ndarray, target_days: int = 365, seed: int = 42) -> np.ndarray:
-    """
-    Ensure a (days x 1440) matrix becomes exactly `target_days` rows.
-    - If days < target: tile whole cycles and append the first `rem` rows.
-    - If days > target: downsample without replacement.
-    - If equal: return as-is.
-    """
-    mat = np.asarray(mat)
-    if mat.ndim != 2 or mat.shape[1] != 1440:
-        raise ValueError(f"Expected (days, 1440) minute matrix, got {mat.shape}")
-
-    days = mat.shape[0]
-    if days == target_days:
-        return mat
-
-    if days < target_days:
-        reps = target_days // days
-        rem = target_days % days
-        if reps > 0:
-            tiled = np.vstack([mat] * reps)
-        else:
-            tiled = np.empty((0, mat.shape[1]))
-        if rem > 0:
-            pad = mat[:rem, :]
-            return np.vstack([tiled, pad])
-        return tiled
-
-    # days > target_days → downsample without replacement
-    rng = default_rng(seed)
-    idx = rng.choice(days, size=target_days, replace=False)
-    return mat[idx, :]
-
 # ---------------------------------------------------------------------
 # SINGLE-ARCHETYPE
 # ---------------------------------------------------------------------
 def run_single_archetype(excel_path: Path, num_days: int) -> Dict:
     """
     Use ONE full RAMP input file containing all user categories.
-    Generates per-category arrays of shape (num_days, 1440), fits each to 365 days,
-    aggregates, and saves CSVs in outputs/.
+    Generates per-category pools (num_days x 1440), then builds a 365-day year
+    by randomly sampling days from each pool (with replacement if needed).
+    Aggregation is performed AFTER sampling, using the same sampled day index per
+    calendar day across all categories for coherence.
     """
     if not excel_path.exists():
         raise FileNotFoundError(f"Excel file not found: {excel_path}")
@@ -164,63 +141,76 @@ def run_single_archetype(excel_path: Path, num_days: int) -> Dict:
                 continue
             arr = arr.reshape((-1, 1440))
 
+        # Basic validation
+        if arr.ndim != 2 or arr.shape[1] != 1440:
+            continue
+
         per_cat_arrays[cat] = arr
 
     if not per_cat_arrays:
         raise RuntimeError("No profiles generated. Check the input Excel format.")
 
-    # 🔁 Fit each category matrix to a full year (365×1440) *before* aggregating
-    per_cat_year: Dict[str, np.ndarray] = {cat: _fit_to_year(mat, 365) for cat, mat in per_cat_arrays.items()}
-    aggregated = np.sum(list(per_cat_year.values()), axis=0)  # still (365, 1440)
+    # --- Pooled sampling to 365 days ---
+    # Use ONE rng and ONE index sequence so all categories use the same sampled day per calendar day.
+    rng = default_rng()
+    target_days = 365
+
+    # Determine effective pool length: ideally all categories have same pool length, but don't assume.
+    # We'll sample indices per category pool length, but to keep coherence we pick a "reference pool".
+    # Choose the smallest pool to avoid out-of-bounds and to keep comparable diversity.
+    ref_cat = min(per_cat_arrays.keys(), key=lambda c: per_cat_arrays[c].shape[0])
+    ref_pool_days = per_cat_arrays[ref_cat].shape[0]
+    if ref_pool_days <= 0:
+        raise RuntimeError("Reference category pool is empty.")
+
+    # Sample day indices from reference pool
+    # If num_days >= 365 -> sample without replacement gives max diversity; otherwise with replacement.
+    replace = not (ref_pool_days >= target_days)
+    idx_year = rng.choice(ref_pool_days, size=target_days, replace=replace)
+
+    # Build year per category using the SAME idx_year, clipped to each pool length if needed.
+    # (If pools differ in length, we map indices via modulo to keep deterministic behavior.)
+    per_cat_year: Dict[str, np.ndarray] = {}
+    for cat, mat in per_cat_arrays.items():
+        pool_days = mat.shape[0]
+        if pool_days <= 0:
+            per_cat_year[cat] = np.zeros((target_days, 1440), dtype=float)
+            continue
+
+        if pool_days == ref_pool_days:
+            idx = idx_year
+        else:
+            # Map reference indices into this pool size
+            idx = idx_year % pool_days
+
+        per_cat_year[cat] = mat[idx, :]
+
+    aggregated = np.sum(list(per_cat_year.values()), axis=0)  # (365, 1440)
 
     # Save results
     PM.outputs_dir.mkdir(parents=True, exist_ok=True)
-
-    EXPORT_MINUTE_LONG = True  # export copies for download
-    per_user_csv: Dict[str, str] = {}
-    per_user_csv_long: Dict[str, str] = {}
-
-    # --- per-category
     for cat, year_mat in per_cat_year.items():
-        # 1) Always save WIDE (365 x 1440) for the app
-        wide_path = PM.outputs_dir / f"profile_{_safe_name(cat)}.csv"
-        save_dataframe_csv(pd.DataFrame(year_mat), wide_path)
-        per_user_csv[cat] = str(wide_path.resolve())
+        df = pd.DataFrame(year_mat)
+        save_dataframe_csv(df, PM.outputs_dir / f"profile_{_safe_name(cat)}.csv")
 
-        # 2) Optionally save LONG (525600 x 2) for export
-        if EXPORT_MINUTE_LONG:
-            df_long = matrix_to_long_series(
-                year_mat, freq="T", year=2019, col_name="power_W", add_datetime_index=False
-            )
-            long_path = PM.outputs_dir / f"profile_{_safe_name(cat)}_minute_long.csv"
-            save_dataframe_csv(df_long, long_path)
-            per_user_csv_long[cat] = str(long_path.resolve())
-
-    # --- aggregated (365 x 1440)
-    agg_wide_path = PM.outputs_dir / "profile_aggregated.csv"
-    save_dataframe_csv(pd.DataFrame(aggregated), agg_wide_path)
-
-    agg_long_path = None
-    if EXPORT_MINUTE_LONG:
-        agg_long = matrix_to_long_series(
-            aggregated, freq="T", year=2019, col_name="power_W", add_datetime_index=False
-        )
-        agg_long_path = PM.outputs_dir / "profile_aggregated_minute_long.csv"
-        save_dataframe_csv(agg_long, agg_long_path)
+    agg_df = pd.DataFrame(aggregated)
+    agg_path = save_dataframe_csv(agg_df, PM.outputs_dir / "profile_aggregated.csv")
 
     return {
         "mode": "single",
-        "num_days": 365,
-        "minutes": 1440,
+        "num_days": int(aggregated.shape[0]),  # 365
+        "minutes": int(aggregated.shape[1]),   # 1440
         "categories": categories,
-        # Keep this pointing to WIDE so app logic remains consistent
-        "aggregated_csv": str(agg_wide_path.resolve()),
-        "per_user_csv": per_user_csv,
-        # Optional extra pointers (nice-to-have)
-        "aggregated_csv_long": str(agg_long_path.resolve()) if agg_long_path else None,
-        "per_user_csv_long": per_user_csv_long,
+        "aggregated_csv": str(agg_path),
+        "per_user_csv": {cat: str((PM.outputs_dir / f"profile_{_safe_name(cat)}.csv").resolve())
+                         for cat in categories},
+        "sampling": {
+            "method": "pooled_random_sampling",
+            "replacement": bool(replace),
+            "reference_category": ref_cat,
+            "reference_pool_days": int(ref_pool_days),
+        },
     }
-
 
 # ---------------------------------------------------------------------
 # MULTI-ARCHETYPE
@@ -233,7 +223,7 @@ def run_multi_archetype() -> Dict:
 
     Steps:
       1) For each archetype & user category, generate pools of daily profiles (num_days x 1440)
-      2) Build a 365-day calendar (2019) using season-by-month + optional week pattern
+      2) Build a 365-day calendar (2020) using season-by-month + optional week pattern
       3) Sample 1 day from the relevant archetype pool for each day, per category
       4) Save per-user (365 x 1440) and aggregated CSVs
     """
@@ -309,8 +299,8 @@ def run_multi_archetype() -> Dict:
 
     global_categories = sorted(global_categories)
 
-    # --- Build 365-day calendar and assemble (based on 2019 for non-leap year)
-    dates = pd.date_range("2019-01-01", periods=365, freq="D")
+    # --- Build 365-day calendar and assemble
+    dates = pd.date_range("2020-01-01", "2020-12-31", freq="D")
     rng = default_rng()
 
     def _arch_id_from_pair(season_name: str, week_class_name: Optional[str]) -> str:
@@ -349,52 +339,23 @@ def run_multi_archetype() -> Dict:
 
     # Stack & save
     PM.outputs_dir.mkdir(parents=True, exist_ok=True)
-
-    EXPORT_MINUTE_LONG = True
-
     per_user_csv: Dict[str, str] = {}
-    per_user_csv_long: Dict[str, str] = {}
-
-    # --- per-category
     for cat in global_categories:
-        mat = np.vstack(year_by_cat[cat])  # (365,1440)
+        mat = np.vstack(year_by_cat[cat])
+        df = pd.DataFrame(mat)
+        path = save_dataframe_csv(df, PM.outputs_dir / f"profile_{_safe_name(cat)}.csv")
+        per_user_csv[cat] = str(path)
 
-        # 1) Always save WIDE
-        wide_path = PM.outputs_dir / f"profile_{_safe_name(cat)}.csv"
-        save_dataframe_csv(pd.DataFrame(mat), wide_path)
-        per_user_csv[cat] = str(wide_path.resolve())
-
-        # 2) Optionally save LONG
-        if EXPORT_MINUTE_LONG:
-            df_long = matrix_to_long_series(
-                mat, freq="T", year=2019, col_name="power_W", add_datetime_index=False
-            )
-            long_path = PM.outputs_dir / f"profile_{_safe_name(cat)}_minute_long.csv"
-            save_dataframe_csv(df_long, long_path)
-            per_user_csv_long[cat] = str(long_path.resolve())
-
-    # --- aggregated
-    agg_mat = np.vstack(year_agg)  # (365,1440)
-
-    agg_wide_path = PM.outputs_dir / "profile_aggregated.csv"
-    save_dataframe_csv(pd.DataFrame(agg_mat), agg_wide_path)
-
-    agg_long_path = None
-    if EXPORT_MINUTE_LONG:
-        agg_long = matrix_to_long_series(
-            agg_mat, freq="T", year=2019, col_name="power_W", add_datetime_index=False
-        )
-        agg_long_path = PM.outputs_dir / "profile_aggregated_minute_long.csv"
-        save_dataframe_csv(agg_long, agg_long_path)
+    agg_mat = np.vstack(year_agg)
+    agg_df = pd.DataFrame(agg_mat)
+    agg_path = save_dataframe_csv(agg_df, PM.outputs_dir / "profile_aggregated.csv")
 
     return {
         "mode": "multi",
-        "days": 365,
-        "minutes": 1440,
+        "days": int(agg_mat.shape[0]),
+        "minutes": int(agg_mat.shape[1]),
         "categories": global_categories,
-        "aggregated_csv": str(agg_wide_path.resolve()),
+        "aggregated_csv": str(agg_path),
         "per_user_csv": per_user_csv,
-        "aggregated_csv_long": str(agg_long_path.resolve()) if agg_long_path else None,
-        "per_user_csv_long": per_user_csv_long,
     }
 
