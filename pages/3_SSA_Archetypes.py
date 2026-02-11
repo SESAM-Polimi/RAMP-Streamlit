@@ -70,6 +70,7 @@ st.markdown(
     """
 )
 
+
 col1, col2 = st.columns(2)
 lat = col1.number_input(
     "Latitude [°]",
@@ -101,8 +102,6 @@ st.markdown(
     These tiers were constructed from literature on rural electrification and
     observed demand profiles in Sub-Saharan Africa.
 
-    Beyond households, two institutional demand categories are included:
-
     **Health Facilities (5 archetypes)**  
     Represent a spectrum from small rural dispensaries to sub-county hospitals.
     As tier increases, loads become more **daytime-oriented** with higher medical
@@ -120,7 +119,6 @@ st.markdown(
     lighting, small appliances). No residential or evening loads are assumed.
     """
 )
-
 
 col_hh = st.columns(5)
 h1 = col_hh[0].number_input("Households Tier 1", min_value=0.0, value=0.0, step=10.0)

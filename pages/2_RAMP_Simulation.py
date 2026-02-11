@@ -13,20 +13,14 @@ from core.utils import (
     default_month_partition,
     save_year_structure,
     derive_archetypes,
-    build_full_from_simplified,
     load_profiles_from_outputs,
     load_aggregated_from_outputs,
     build_hourly_from_minute,
     save_hourly_aggregated,
     build_calendar_metadata_from_year_structure,
-    matrix_to_long_series,
-    save_dataframe_csv,
 )
-from core.ramp_core import (
-    build_multi_archetypes_from_uploads,
-    run_single_archetype,
-    run_multi_archetype,
-)
+from core.ramp_core import run_single_archetype, run_multi_archetype, save_archetype_configs
+from core.ramp_schema import RAMPInputSchema
 
 st.title("High-Resolution RAMP Demand Simulation")
 st.caption("Configure RAMP seasons, upload inputs, simulate, and visualise load profiles.")
@@ -44,13 +38,12 @@ st.markdown(
       the `outputs/` folder.
     
     It is recommended to:
-    - keep your own copies of the simplified Excel inputs you use,
+    - keep your own copies of the Excel inputs you use,
     - use the **Download results** section at the bottom of the page to export
       the generated profiles (ZIP + hourly aggregate) and archive them per
       project / scenario outside this app.
     """
 )
-
 
 if st.button("Clear inputs folder", type="primary"):
     try:
@@ -287,6 +280,50 @@ with st.container():
     # Persist snapshot
     st.session_state.ys = ys
 
+def validate_and_save_ramp_excel(
+    uploaded_file,
+    out_path,
+    *,
+    strict_unknown_cols: bool = False,
+    fill_missing_optional: bool = True,
+    preview_rows: int = 15,
+):
+    """
+    Read uploaded Excel -> map pretty/canonical headers -> fill defaults -> save canonical Excel to out_path.
+    Returns (df_canon, report).
+    """
+    schema = RAMPInputSchema()
+
+    raw_bytes = uploaded_file.getvalue()
+    df_raw = pd.read_excel(io.BytesIO(raw_bytes), sheet_name=0)
+
+    df_canon, report = schema.to_canonical(
+        df_raw,
+        strict_unknown_cols=strict_unknown_cols,
+        fill_missing_optional=fill_missing_optional,
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Save as canonical excel (single sheet)
+    df_canon.to_excel(out_path, index=False)
+
+    # UI feedback (optional)
+    st.success(f"Input validated and saved to: `{out_path}`")
+    if report.used_pretty_headers:
+        with st.expander("Header mapping report", expanded=False):
+            st.write("**Pretty → canonical columns used:**")
+            st.json(report.used_pretty_headers)
+            if report.ignored_columns:
+                st.warning("Ignored unknown columns: " + ", ".join(report.ignored_columns))
+            if report.filled_defaults:
+                st.info(f"Filled missing optional columns with defaults: {len(report.filled_defaults)}")
+            if report.warnings:
+                for w in report.warnings:
+                    st.warning(w)
+
+    st.dataframe(df_canon.head(preview_rows), use_container_width=True)
+    return df_canon, report
+
 # -----------------------------------------------------------------------------
 # Actions: Save config + (Single-archetype) upload & build full input
 # -----------------------------------------------------------------------------
@@ -321,18 +358,26 @@ st.image(PM.assets_dir / "ramp_template.png", use_container_width=True, caption=
 if st.session_state.inputs_updated:
     if is_single_archetype:
         st.caption("Single-archetype detected (1 season, no weekly differentiation).")
-        st.markdown("**Upload the RAMP Excel file for the single archetype.**")
-        uploaded = st.file_uploader("Upload RAMP Excel Input file", type=["xlsx", "xls"], accept_multiple_files=False)
+        st.markdown("**Upload the full RAMP Excel file (template format).**")
+
+        uploaded = st.file_uploader(
+            "Upload RAMP Excel Input file",
+            type=["xlsx", "xls"],
+            accept_multiple_files=False
+        )
+
         if uploaded is not None:
             try:
-                # Pass a file-like object (what core expects)
-                buf = io.BytesIO(uploaded.getvalue())
-                df_full = build_full_from_simplified(buf)  # returns the built full RAMP DataFrame
-                st.success("Full RAMP input built successfully.")
-                st.dataframe(df_full.head(15), use_container_width=True)
+                df_full, report = validate_and_save_ramp_excel(
+                    uploaded,
+                    PM.full_input_xlsx,
+                    strict_unknown_cols=False,     # set True if you want to hard-fail on unknown headers
+                    fill_missing_optional=True,    # “autofill missing columns” behavior
+                    preview_rows=15,
+                )
                 st.session_state.inputs_built = True
             except Exception as e:
-                st.error(f"Build failed: {e}")
+                st.error(f"Upload/validation failed: {e}")
     else:
         st.caption("Multi-archetype detected (multiple seasons and/or weekly differentiation).")
         st.markdown(
@@ -419,7 +464,7 @@ if st.session_state.inputs_updated:
                             key=f"numdays_{arch_id}"
                         ))
                         uploaded = col2.file_uploader(
-                            "Upload simplified RAMP Excel (.xlsx/.xls)", type=["xlsx", "xls"],
+                            "Upload RAMP Excel (.xlsx/.xls)", type=["xlsx", "xls"],
                             accept_multiple_files=False, key=f"file_{arch_id}"
                         )
                         # Store bytes if provided
@@ -434,28 +479,75 @@ if st.session_state.inputs_updated:
 
                 submit = st.form_submit_button("Build inputs for selected archetypes")
 
-            if submit:
-                # Filter rows to only active archetypes (extra safety)
-                rows_current = {a["arch_id"]: rows[a["arch_id"]] for a in archetypes}
+                if submit:
+                    try:
+                        schema = RAMPInputSchema()
 
-                # Only pass the current rows (they include files and num_days)
-                built = build_multi_archetypes_from_uploads(rows_current)
+                        built = {}  # mimic your previous status dict
+                        configs_to_save = {}
 
-                # Show a compact status table for the LAST configuration
-                status_records = []
-                for arch_id, info in built.items():
-                    status_records.append({
-                        "arch_id": arch_id,
-                        "label": info.get("label", ""),
-                        "num_days": info.get("num_days", ""),
-                        "built": "yes" if "full_excel_path" in info else "no (missing upload)",
-                        "full_excel_path": info.get("full_excel_path", ""),
-                    })
+                        for a in archetypes:
+                            arch_id = a["arch_id"]
+                            meta = rows[arch_id]
 
-                st.success("Archetype configuration saved.")
-                st.dataframe(pd.DataFrame(status_records), use_container_width=True)
-                st.caption("Metadata also saved to `config/archetype_configs.json`.")
-                st.session_state.inputs_built = True
+                            file_like = meta.get("file_like", None)
+                            if file_like is None:
+                                built[arch_id] = {
+                                    "label": meta.get("label", ""),
+                                    "num_days": meta.get("num_days", ""),
+                                    "error": "missing upload",
+                                }
+                                continue
+
+                            # Read user file
+                            df_raw = pd.read_excel(file_like, sheet_name=0)
+
+                            # Schema -> canonical
+                            df_canon, report = schema.to_canonical(
+                                df_raw,
+                                strict_unknown_cols=False,
+                                fill_missing_optional=True,
+                            )
+
+                            # Save canonical archetype Excel
+                            out_path = PM.archetypes_dir / f"ramp_input_{arch_id}.xlsx"
+                            out_path.parent.mkdir(parents=True, exist_ok=True)
+                            df_canon.to_excel(out_path, index=False)
+
+                            built[arch_id] = {
+                                "label": meta.get("label", ""),
+                                "num_days": int(meta.get("num_days", 60)),
+                                "full_excel_path": str(out_path),
+                            }
+                            configs_to_save[arch_id] = {
+                                "season": meta.get("season"),
+                                "week_class": meta.get("week_class"),
+                                "label": meta.get("label"),
+                                "num_days": int(meta.get("num_days", 60)),
+                                "full_excel_path": str(out_path),
+                            }
+
+                        # Persist archetype configs for ramp_core
+                        save_archetype_configs(configs_to_save)
+
+                        # Status table
+                        status_records = []
+                        for arch_id, info in built.items():
+                            status_records.append({
+                                "arch_id": arch_id,
+                                "label": info.get("label", ""),
+                                "num_days": info.get("num_days", ""),
+                                "built": "yes" if "full_excel_path" in info else f"no ({info.get('error','')})",
+                                "full_excel_path": info.get("full_excel_path", ""),
+                            })
+
+                        st.success("Archetype inputs validated and saved.")
+                        st.dataframe(pd.DataFrame(status_records), use_container_width=True)
+                        st.caption("Archetype metadata saved to `config/archetype_configs.json`.")
+                        st.session_state.inputs_built = True
+
+                    except Exception as e:
+                        st.error(f"Archetype build failed: {e}")
 else:
     st.info("Year Structure not saved or not changed yet.")
 
@@ -473,8 +565,9 @@ if st.session_state.inputs_built:
         if num_days < 365:
             st.warning(
                 f"You selected {num_days} day(s). "
-                "The app will repeat/downsample them to build a full 365-day year. "
-                "This speeds up computation but reduces variability."
+                "The app will randomly resample from this pool to assemble a full 365-day year "
+                "(sampling with replacement if needed). "
+                "This speeds up computation but may repeat similar day patterns and reduce overall variability."
             )
         run_single = st.button("🚀 Run single-archetype simulation")
 
@@ -672,16 +765,9 @@ else:
         st.error(f"Could not build hourly series: {e}")
         st.stop()
 
-    # Save hourly series (existing behavior)
+    # Save hourly series
     out_path = save_hourly_aggregated(hourly)
     st.caption(f"Hourly aggregated profile saved to: `{out_path}`")
-
-    # ALSO export hourly LONG (8760 rows) for download (optional)
-    hourly_long_df = matrix_to_long_series(
-        hourly, freq="H", year=2020, col_name="power_W", add_datetime_index=False
-    )
-    out_path_long = PM.outputs_dir / "profile_aggregated_hourly_long.csv"
-    save_dataframe_csv(hourly_long_df, out_path_long)
 
     # Compute stats for plot (kW)
     mean_hourly = hourly.mean(axis=0) / 1000.0
@@ -715,14 +801,14 @@ else:
         """
     )
 
-    # 1b) Aggregated minute-resolution profile (LONG: 525600 rows)
-    agg_long_path = PM.outputs_dir / "profile_aggregated_minute_long.csv"
-    if agg_long_path.exists():
-        with open(agg_long_path, "rb") as f:
+    # 1) Aggregated minute-resolution profile (365 × 1440)
+    agg_csv_path = PM.outputs_dir / "profile_aggregated.csv"
+    if agg_csv_path.exists():
+        with open(agg_csv_path, "rb") as f:
             st.download_button(
-                "Download aggregated minute profile",
+                "Download aggregated minute profile (365×1440)",
                 data=f.read(),
-                file_name="profile_aggregated_minute_long.csv",
+                file_name="profile_aggregated.csv",
                 mime="text/csv",
             )
 
@@ -740,13 +826,13 @@ else:
             mime="application/zip",
         )
 
-    # 3b) Aggregated hourly profile (LONG: 8760 rows)
-    if out_path_long.exists():
-        with open(out_path_long, "rb") as f:
+    # 3) Aggregated hourly profile (8760 hours)
+    if out_path.exists():
+        with open(out_path, "rb") as f:
             st.download_button(
-                "Download aggregated hourly profile",
+                "Download aggregated hourly profile (8760 hours)",
                 data=f.read(),
-                file_name="profile_aggregated_hourly_long.csv",
+                file_name="profile_aggregated_hourly.csv",
                 mime="text/csv",
             )
 
