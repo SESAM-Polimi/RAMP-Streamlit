@@ -4,24 +4,24 @@ from config.path_manager import PM
 st.set_page_config(page_title="RAMP Demand Simulator", layout="wide")
 
 st.title("RAMP - Bottom-up Demand Simulation")
-st.subheader("About RAMP")
+st.caption("Build RAMP inputs, run stochastic simulations, and export demand profiles for energy system models.")
 
+# --- About RAMP --------------------------------------------------------------
+st.subheader("About RAMP")
 st.markdown(
     """
 [RAMP](https://rampdemand.org/) is an open-source framework for generating
-**high-resolution, stochastic multi-energy demand profiles** when only limited
-information on user behaviour is available.
+**high-resolution, stochastic demand profiles** from appliance-level assumptions,
+particularly useful when only limited information on user behaviour is available.
 
-This app wraps the RAMP engine in a streamlined UI, allowing you to:
-
-- Define **seasonal and weekly archetypes** for the year;
-- Upload **appliance-level RAMP Excel inputs**;
-- Generate **minute-resolution synthetic yearly load profiles**;
-- Export **aggregated and per-category time series** for energy system models.
+This Streamlit app wraps the RAMP engine in a streamlined interface to help you:
+- prepare **RAMP-compatible inputs** more easily,
+- run **minute-resolution stochastic simulations**, and
+- export **aggregated / per-category time series** for planning, dispatch, and optimisation workflows.
 """
 )
 
-st.image(PM.assets_dir / "ramp.png")
+st.image(PM.assets_dir / "ramp.png", use_container_width=False)
 
 st.markdown(
     """
@@ -30,38 +30,77 @@ st.markdown(
 """
 )
 
+st.markdown("---")
+
+# --- App organisation --------------------------------------------------------
+st.subheader("How the app is organised")
+
 st.markdown(
     """
-    ### How the app is organised
-
-    The application is structured into **two main workflows**, accessible from the
-    Streamlit **sidebar**:
-
-    - **RAMP Simulation**  
-      Use this page when you already work with, or want to build, **RAMP-compatible
-      Excel inputs** and exploit the full stochastic engine.
-      - Configure the **year structure** (seasons, months, and optional week-classes).
-      - Upload one or more **simplified RAMP Excel files** (single or multi-archetype).
-      - Let the app build the **full RAMP input workbooks** behind the scenes.
-      - Run the **stochastic simulation** to generate a synthetic full year at
-        **one-minute resolution (365 × 1440)**.
-      - Visualise daily profiles with **variability bands** and export:
-        - per-category profiles
-        - aggregated minute profile
-        - aggregated hourly profile for energy system models.
-
-    - **SSA Load Archetypes**  
-      Use this page when you want a **fast, bottom-up demand profile** based on
-      pre-defined **Sub-Saharan Africa user archetypes**.
-      - Specify **location** (latitude) and **cooling regime** to select the climatic zone.
-      - Define the number of **households by tier**, **schools**, and **hospital tiers**.
-      - Generate a **one-year hourly aggregated load profile (8760 hours)** plus
-        optional per-user (tier/facility) profiles.
-      - Export ready-to-use CSVs for use in planning and optimisation tools.
-
-    👉 Use the **sidebar navigation** to switch between pages and choose the
-    workflow that best matches your case: detailed **RAMP-based stochastic demand**
-    or **quick SSA archetype-based demand**.
-    """
+The application is organised into **three pages**, accessible from the Streamlit **sidebar**.
+Depending on your workflow, you can either (A) build the Excel inputs directly in the app
+or (B) upload your own full RAMP Excel input file and run the simulation.
+"""
 )
 
+# --- Page 1 ------------------------------------------------------------------
+st.markdown("### 1) Inputs Editor")
+st.markdown(
+    """
+Use this page to **create full RAMP Excel inputs directly in the app** (recommended if you want
+to avoid editing the full template manually).
+
+Main features:
+- Create multiple **user categories** (e.g., Households, Clinic Tier 1, Schools).
+- Add **standard appliances** (windows + total daily use time).
+- Add **duty-cycle appliances** (cycle segments and admissible cycle windows).
+- Quick **visual validation** with a time-window **heatmap** (hourly view).
+- Export a **ready-to-run full RAMP Excel** file (with user-friendly / “pretty” headers, internally mapped to canonical fields).
+"""
+)
+
+# --- Page 2 ------------------------------------------------------------------
+st.markdown("### 2) RAMP Simulation")
+st.markdown(
+    """
+Use this page to **run the stochastic demand simulation** with the RAMP engine.
+
+Workflow:
+1. Configure the **year structure**:
+   - number of seasons (1–4),
+   - month allocation per season,
+   - optional **week-classes** (e.g., Weekday/Weekend).
+2. Upload the **full RAMP Excel input file**:
+   - single-archetype mode → upload one full Excel file,
+   - multi-archetype mode → upload one full Excel file per archetype (**Season × Week-class**, or Season only).
+3. Run the simulation to generate:
+   - **minute-resolution daily profiles** (stochastic pool per archetype),
+   - a synthetic yearly profile assembled into a **365-day** timeline.
+4. Visualise:
+   - average daily profiles,
+   - min–max variability bands,
+   - day-by-day inspection and filtering by season / week-class (when enabled).
+5. Export results:
+   - per-category minute profiles,
+   - aggregated minute profile,
+   - aggregated **hourly** profile (recommended for optimisation models).
+"""
+)
+
+# --- Page 3 ------------------------------------------------------------------
+st.markdown("### 3) SSA Archetypes")
+st.markdown(
+    """
+Use this page when you need a **fast, bottom-up demand profile** based on pre-defined
+**Sub-Saharan Africa archetypes** (without building full RAMP appliance sheets).
+
+Main features:
+- Select climatic context (e.g., by latitude / cooling regime logic).
+- Specify number of users by tier (households, schools, health facilities).
+- Generate a **one-year hourly aggregated profile (8760)** and optional per-archetype outputs.
+- Export CSVs ready for planning and optimisation tools.
+"""
+)
+
+st.markdown("---")
+st.info("👉 Use the **sidebar navigation** to start: typically **Inputs Editor → RAMP Simulation → Download results**.")
