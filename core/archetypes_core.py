@@ -63,7 +63,7 @@ def determine_zone(lat: float) -> str:
     else:
         raise ValueError(
             "Latitude out of range. Archetypes are valid only for Sub-Saharan "
-            "Africa (lat between -30° and 20°)."
+            "Africa south of 20°N (zones F1 10–20°N ... F5 south of 30°S)."
         )
 
 

@@ -35,8 +35,12 @@ st.markdown(
     """
     The methodology is described in:
 
-    > *Archetypes of Rural Users in Sub-Saharan Africa for Load Demand Estimation*  
-    > [Archetypes paper – ResearchGate](https://www.researchgate.net/publication/376763546_Archetypes_of_Rural_Users_in_Sub-Saharan_Africa_for_Load_Demand_Estimation)
+    > N. Stevanato et al., *Archetypes of Rural Users in Sub-Saharan Africa for Load Demand Estimation*,
+    > 2023 IEEE PES/IAS PowerAfrica. [doi:10.1109/POWERAFRICA57932.2023.10363287](https://doi.org/10.1109/POWERAFRICA57932.2023.10363287)
+
+    Profiles, RAMP inputs and documentation are published as an open dataset (v1.0.0, CC-BY-4.0):
+    [Zenodo](https://doi.org/10.5281/zenodo.22832973). This library matches v1.0.0 (health-facility tiers 2–5 corrected in 2025;
+    no-cooling 10–20°N household tiers 1–3 re-simulated in 2026; see the dataset CHANGELOG).
 
     The output is a **single synthetic year** at **hourly resolution (8760 hours)**:
     - One **aggregated demand profile** (`Load` column)
@@ -54,9 +58,8 @@ st.markdown(
     **Latitude** influences the **daily and seasonal timing** of electricity use
     (primarily lighting, cooking, and cooling) by modifying sunrise/sunset hours
     across the year. In the archetype study, latitudes across Sub-Saharan Africa
-    were grouped into five representative bands, covering roughly **30°S to 20°N**,
-    corresponding to where the profiles are valid. Values outside this range may not
-    reflect realistic seasonal appliance behaviour and are therefore not supported.
+    were grouped into five bands: **F1** 10–20°N, **F2** 10°N–10°S, **F3** 10–20°S,
+    **F4** 20–30°S and **F5** south of 30°S. North of 20°N is not supported.
 
     **Cooling regime** indicates when cooling appliances are used throughout the year:
     - **NC** - No cooling use
@@ -102,16 +105,14 @@ st.markdown(
     These tiers were constructed from literature on rural electrification and
     observed demand profiles in Sub-Saharan Africa.
 
-    **Health Facilities (5 archetypes)**  
-    Represent a spectrum from small rural dispensaries to sub-county hospitals.
-    As tier increases, loads become more **daytime-oriented** with higher medical
-    equipment and auxiliary service usage (e.g. lighting, refrigeration, ICT),
-    consistent with progressively larger operational capacity.
-    - Tier 1: Rural dispensary 
-    - Tier 2: Basic health center 
-    - Tier 3: Medium capacity 
-    - Tier 4: District-level 
-    - Tier 5: Sub-county hospital
+    **Health Facilities (5 archetypes, one facility each)**  
+    Defined by services and size (see `health_facility_tiers.csv` in the dataset):
+    - Tier 1: Outpatient dispensary / health post, daytime only, no beds (Kenya L2, Uganda HC II)
+    - Tier 2: Health centre with maternity and short-stay beds, ~5–25 beds (L3, HC III)
+    - Tier 3: First-referral facility, 24/7, cooling and imaging, ~25–45 beds (small L4, HC IV)
+    - Tier 4: As Tier 3 with ~1.5× capacity, ~45–65 beds (derived: 1.5 × Tier 3)
+    - Tier 5: As Tier 3 with ~2× capacity, ~65–100 beds (derived: 2 × Tier 3); not
+      representative of referral hospitals above ~100 beds
 
     **School (1 archetype)**  
     Represents a rural primary school with characteristic **daytime loads** and

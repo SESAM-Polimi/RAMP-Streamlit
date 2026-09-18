@@ -113,8 +113,10 @@ Climatic context is selected via latitude / cooling regime logic.
 
 The methodology is based on:
 
-> *Archetypes of Rural Users in Sub-Saharan Africa for Load Demand Estimation*  
-> https://www.researchgate.net/publication/376763546_Archetypes_of_Rural_Users_in_Sub-Saharan_Africa_for_Load_Demand_Estimation
+> N. Stevanato, I. Sangiorgio, R. Mereu, E. Colombo, *Archetypes of Rural Users in Sub-Saharan Africa for Load Demand Estimation*, 2023 IEEE PES/IAS PowerAfrica.  
+> https://doi.org/10.1109/POWERAFRICA57932.2023.10363287
+
+The profiles in `config/archetypes_library/` correspond to the open dataset **v1.0.0** on Zenodo (https://doi.org/10.5281/zenodo.22832973), which also provides the RAMP inputs, 1-minute household profiles and the definitions of household and health-facility tiers. Compared with earlier versions of this app, v1.0.0 updates health-facility tiers 2–5 (2025 correction of the X-ray and cooling modelling) and household archetypes NC_F1 tiers 1–3 (re-simulated in 2026); see the dataset CHANGELOG.
 
 This mode outputs:
 
