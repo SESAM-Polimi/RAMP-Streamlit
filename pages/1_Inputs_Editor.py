@@ -385,6 +385,9 @@ del_name = col_2.selectbox(
 if col_2.button("🗑️ Remove selected", use_container_width=True):
     if del_name != "—":
         st.session_state.categories.pop(del_name, None)
+        # drop editor state so a re-added category with the same name starts clean
+        for suffix in ("std_base", "duty_base", "std_editor", "duty_editor"):
+            st.session_state.pop(f"{del_name}__{suffix}", None)
     else:
         st.warning("Select a category to remove.")
 
@@ -415,10 +418,15 @@ for cat_name, meta in st.session_state.categories.items():
             "Windows are in **minutes** (0–1440). Example: 18:00→1080, 23:59/24:00→1440."
         )
 
-        std_pretty = df_to_pretty(meta["std_df"], STD_COLS)
+        # The editor's input must stay identical across reruns: Streamlit hashes
+        # it into the widget identity, so feeding the edited output back in
+        # resets the widget and drops every other edit.
+        std_base_key = f"{cat_name}__std_base"
+        if std_base_key not in st.session_state:
+            st.session_state[std_base_key] = df_to_pretty(meta["std_df"], STD_COLS)
 
         edited_std_pretty = st.data_editor(
-            std_pretty,
+            st.session_state[std_base_key],
             num_rows="dynamic",
             use_container_width=True,
             key=f"{cat_name}__std_editor",
@@ -436,10 +444,12 @@ for cat_name, meta in st.session_state.categories.items():
             "one or more cycle templates (power+duration segments + admissible cycle windows)."
         )
 
-        duty_pretty = df_to_pretty(meta["duty_df"], DUTY_COLS)
+        duty_base_key = f"{cat_name}__duty_base"
+        if duty_base_key not in st.session_state:
+            st.session_state[duty_base_key] = df_to_pretty(meta["duty_df"], DUTY_COLS)
 
         edited_duty_pretty = st.data_editor(
-            duty_pretty,
+            st.session_state[duty_base_key],
             num_rows="dynamic",
             use_container_width=True,
             key=f"{cat_name}__duty_editor",
